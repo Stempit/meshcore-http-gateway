@@ -257,7 +257,7 @@ done
 
 ## Как это соотносится с остальным семейством
 
-| | [meshbot](https://github.com/stempit/meshbot) | этот шлюз | [meshcore-mcp-gateway](https://github.com/stempit/meshcore-mcp-gateway) |
+| | [meshcore-go-bot](https://github.com/stempit/meshcore-go-bot) | этот шлюз | [meshcore-mcp-gateway](https://github.com/stempit/meshcore-mcp-gateway) |
 |---|---|---|---|
 | Назначение | автономный чат-бот в mesh-сети | HTTP-шлюз для *вашего* кода | мост к голосовому ассистенту XiaoZhi |
 | Обработка команд (`.ping`, игры, LLM…) | ✔ | ✘ | ✘ |

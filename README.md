@@ -255,7 +255,7 @@ done
 
 ## How it relates to the rest of the family
 
-| | [meshbot](https://github.com/stempit/meshbot) | this gateway | [meshcore-mcp-gateway](https://github.com/stempit/meshcore-mcp-gateway) |
+| | [meshcore-go-bot](https://github.com/stempit/meshcore-go-bot) | this gateway | [meshcore-mcp-gateway](https://github.com/stempit/meshcore-mcp-gateway) |
 |---|---|---|---|
 | Purpose | autonomous chat bot on the mesh | HTTP gateway for *your* code | XiaoZhi voice-assistant bridge |
 | Command processing (`.ping`, games, LLM…) | ✔ | ✘ | ✘ |

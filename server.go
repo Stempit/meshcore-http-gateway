@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stempit/meshcore-kit/companion"
 	"github.com/stempit/meshcore-go"
+	"github.com/stempit/meshcore-kit/companion"
 )
 
 // Send pacing mirrors the bot dispatcher's parameters: the same retry counts

@@ -62,8 +62,8 @@ func main() {
 		client: client,
 		inbox:  svc.Inbox,
 		opts: Options{
-			Token:                 cfg.Server.Token,
-			ChannelTransmissions:  cfg.Connection.ChannelTransmissions,
+			Token:                cfg.Server.Token,
+			ChannelTransmissions: cfg.Connection.ChannelTransmissions,
 		},
 		log: log,
 	}

@@ -1,0 +1,14 @@
+# meshcore-http-gateway configuration — see README.md for the full docs.
+# Copy to config.yaml next to the binary and edit. Unknown sections are
+# ignored, so a config.yaml shared with other family apps keeps working.
+
+Server:
+  listen: ":8080"          # bind address (default ":8080")
+  token: ""                # optional; when set, every request must send
+                           # "Authorization: Bearer <token>" (empty = no auth)
+
+Connection:
+  type: "bt"               # "bt" (Bluetooth LE, default) or "serial"
+  # serial_port: "/dev/ttyUSB0"   # when type: "serial"
+  # serial_baud: 115200
+  channel_transmissions: 3 # max transmissions per channel message (default 3)

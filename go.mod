@@ -16,8 +16,6 @@ require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.4 // indirect
-	github.com/kr/pretty v0.3.1 // indirect
-	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	github.com/saltosystems/winrt-go v0.0.0-20261016124014-b298124d7472 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/soypat/cyw43439 v0.2.0 // indirect
@@ -29,7 +27,6 @@ require (
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
 	golang.org/x/sys v0.49.0 // indirect
-	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	tinygo.org/x/bluetooth v0.16.0 // indirect
 	tinygo.org/x/espradio v0.4.0 // indirect
 )

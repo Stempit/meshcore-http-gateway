@@ -2,13 +2,9 @@ module github.com/stempit/meshcore-http-gateway
 
 go 1.27.1
 
-replace github.com/stempit/meshcore-go => ../meshcore-go
-
-replace github.com/stempit/meshcore-kit => ../meshcore-kit
-
 require (
-	github.com/stempit/meshcore-go v0.0.0-00010101000000-000000000000
-	github.com/stempit/meshcore-kit v0.0.0-00010101000000-000000000000
+	github.com/stempit/meshcore-go v0.1.0
+	github.com/stempit/meshcore-kit v0.1.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

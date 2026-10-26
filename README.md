@@ -272,7 +272,7 @@ time: a MeshCore companion serves one BLE/serial connection.
 Source map: `main.go` (composition root + config), `server.go` (handlers,
 auth, error mapping). The device runtime (connect, startup sync, unread
 inbox, keepalive) comes from
-[meshcore-companion](https://github.com/stempit/meshcore-companion); the
+[meshcore-kit](https://github.com/stempit/meshcore-kit); the
 protocol driver from [meshcore-go](https://github.com/stempit/meshcore-go).
 
 ## License

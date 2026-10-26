@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stempit/meshcore-companion/companion"
+	"github.com/stempit/meshcore-kit/companion"
 )
 
 func main() {

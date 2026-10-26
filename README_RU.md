@@ -274,7 +274,7 @@ done
 Карта кода: `main.go` (корень композиции + конфиг), `server.go` (хендлеры,
 авторизация, маппинг ошибок). Рантайм устройства (подключение, стартовая
 синхронизация, инбокс, keepalive) — из
-[meshcore-companion](https://github.com/stempit/meshcore-companion); драйвер
+[meshcore-kit](https://github.com/stempit/meshcore-kit); драйвер
 протокола — [meshcore-go](https://github.com/stempit/meshcore-go).
 
 ## Лицензия

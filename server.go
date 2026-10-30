@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -118,7 +117,7 @@ func (s *Server) handleContacts(w http.ResponseWriter, _ *http.Request) {
 	contacts := s.client.GetContacts()
 	list := make([]contactInfo, 0, len(contacts))
 	for _, c := range contacts {
-		list = append(list, contactInfo{Name: c.Name, Key: fmt.Sprintf("%x", c.PublicKey), LastSeen: c.LastSeen})
+		list = append(list, contactInfo{Name: c.Name, Key: hex.EncodeToString(c.PublicKey), LastSeen: c.LastSeen})
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 	writeJSON(w, http.StatusOK, struct {

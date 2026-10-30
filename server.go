@@ -31,7 +31,7 @@ type Options struct {
 	// "Authorization: Bearer <token>".
 	Token string
 	// ChannelTransmissions is the max number of transmissions per channel
-	// message (deduplicated by receivers). 0 defaults to 3.
+	// message (deduplicated by receivers); loadConfig normalizes unset to 3.
 	ChannelTransmissions int
 }
 
@@ -223,12 +223,8 @@ func (s *Server) sendChannel(w http.ResponseWriter, req sendRequest) {
 		writeError(w, http.StatusNotFound, "channel not found: "+req.To)
 		return
 	}
-	transmissions := s.opts.ChannelTransmissions
-	if transmissions <= 0 {
-		transmissions = 3
-	}
 	s.log.Info("POST /send channel", "to", ch.Name, "text", req.Text, "ack", req.Ack)
-	err := s.client.SendChannelMessageWithRetry(ch, req.Text, req.Ack, channelMaxRetries, transmissions, sendTimeoutPerTry)
+	err := s.client.SendChannelMessageWithRetry(ch, req.Text, req.Ack, channelMaxRetries, s.opts.ChannelTransmissions, sendTimeoutPerTry)
 	s.writeSendResult(w, err)
 }
 

@@ -57,11 +57,6 @@ func main() {
 
 	// ─── HTTP server ──────────────────────────────────────────────────────────
 
-	listen := cfg.Server.Listen
-	if listen == "" {
-		listen = ":8080"
-	}
-
 	srv := &Server{
 		client: client,
 		inbox:  svc.Inbox,
@@ -73,7 +68,7 @@ func main() {
 	}
 
 	httpSrv := &http.Server{
-		Addr:              listen,
+		Addr:              cfg.Server.Listen,
 		Handler:           srv.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// Blocking sends wait through device confirmations and retry pacing —
@@ -84,7 +79,7 @@ func main() {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.ListenAndServe() }()
 
-	log.Info("HTTP gateway listening", "addr", listen, "auth", cfg.Server.Token != "")
+	log.Info("HTTP gateway listening", "addr", cfg.Server.Listen, "auth", cfg.Server.Token != "")
 	log.Info("Endpoints: GET /get, GET /messages, GET /contacts, GET /channels, POST /send")
 
 	select {

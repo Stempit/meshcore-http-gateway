@@ -45,8 +45,9 @@ type config struct {
 	} `yaml:"Connection"`
 }
 
-// loadConfig reads and parses the config file. A missing file is an error:
-// without connection settings there is nothing useful to serve.
+// loadConfig reads and parses the config file, then fills in the documented
+// defaults. A missing file is an error: without connection settings there is
+// nothing useful to serve.
 func loadConfig(path string) (*config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -56,5 +57,17 @@ func loadConfig(path string) (*config, error) {
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	c.normalize()
 	return &c, nil
+}
+
+// normalize fills defaults into fields the YAML left empty, so callers never
+// see unset values.
+func (c *config) normalize() {
+	if c.Server.Listen == "" {
+		c.Server.Listen = ":8080"
+	}
+	if c.Connection.ChannelTransmissions <= 0 {
+		c.Connection.ChannelTransmissions = 3
+	}
 }

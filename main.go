@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/stempit/meshcore-go"
 	"github.com/stempit/meshcore-kit/companion"
 )
 
@@ -34,16 +35,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Meshcore client — BLE (default), USB serial or TCP (Wi-Fi/Ethernet)
-	// depending on config.
-	client, err := companion.Connect(companion.ConnectOptions{
-		Type:          cfg.Connection.Type,
-		SerialPort:    cfg.Connection.SerialPort,
-		SerialBaud:    cfg.Connection.SerialBaud,
-		TCPAddress:    cfg.Connection.TCPAddress,
-		DeviceName:    cfg.Connection.DeviceName,
-		DeviceAddress: cfg.Connection.DeviceAddress,
-	})
+	client, err := connectDevice(cfg, log)
 	if err != nil {
 		log.Error("Failed to connect to device", "error", err)
 		os.Exit(1)
@@ -55,26 +47,7 @@ func main() {
 	svc := companion.NewService(client, log)
 	svc.Start(ctx)
 
-	// ─── HTTP server ──────────────────────────────────────────────────────────
-
-	srv := &Server{
-		client: client,
-		inbox:  svc.Inbox,
-		opts: Options{
-			Token:                cfg.Server.Token,
-			ChannelTransmissions: cfg.Connection.ChannelTransmissions,
-		},
-		log: log,
-	}
-
-	httpSrv := &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           srv.Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
-		// Blocking sends wait through device confirmations and retry pacing —
-		// tens of seconds worst case — so writes get a generous ceiling.
-		WriteTimeout: 90 * time.Second,
-	}
+	httpSrv := newHTTPServer(cfg, client, svc.Inbox, log)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.ListenAndServe() }()
@@ -93,5 +66,39 @@ func main() {
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Error("HTTP server shutdown error", "error", err)
+	}
+}
+
+// connectDevice opens the device connection selected by the Connection
+// config: BLE (default), USB serial or TCP (Wi-Fi/Ethernet).
+func connectDevice(cfg *config, log *slog.Logger) (*meshcore.MeshCoreClient, error) {
+	return companion.Connect(companion.ConnectOptions{
+		Type:          cfg.Connection.Type,
+		SerialPort:    cfg.Connection.SerialPort,
+		SerialBaud:    cfg.Connection.SerialBaud,
+		TCPAddress:    cfg.Connection.TCPAddress,
+		DeviceName:    cfg.Connection.DeviceName,
+		DeviceAddress: cfg.Connection.DeviceAddress,
+	})
+}
+
+// newHTTPServer wires the gateway API onto the device client and inbox.
+func newHTTPServer(cfg *config, client *meshcore.MeshCoreClient, inbox *companion.Inbox, log *slog.Logger) *http.Server {
+	srv := &Server{
+		client: client,
+		inbox:  inbox,
+		opts: Options{
+			Token:                cfg.Server.Token,
+			ChannelTransmissions: cfg.Connection.ChannelTransmissions,
+		},
+		log: log,
+	}
+	return &http.Server{
+		Addr:              cfg.Server.Listen,
+		Handler:           srv.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		// Blocking sends wait through device confirmations and retry pacing —
+		// tens of seconds worst case — so writes get a generous ceiling.
+		WriteTimeout: 90 * time.Second,
 	}
 }

@@ -34,11 +34,15 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Meshcore client — BLE (default) or USB serial depending on config.
+	// Meshcore client — BLE (default), USB serial or TCP (Wi-Fi/Ethernet)
+	// depending on config.
 	client, err := companion.Connect(companion.ConnectOptions{
-		Type:       cfg.Connection.Type,
-		SerialPort: cfg.Connection.SerialPort,
-		SerialBaud: cfg.Connection.SerialBaud,
+		Type:          cfg.Connection.Type,
+		SerialPort:    cfg.Connection.SerialPort,
+		SerialBaud:    cfg.Connection.SerialBaud,
+		TCPAddress:    cfg.Connection.TCPAddress,
+		DeviceName:    cfg.Connection.DeviceName,
+		DeviceAddress: cfg.Connection.DeviceAddress,
 	})
 	if err != nil {
 		log.Error("Failed to connect to device", "error", err)

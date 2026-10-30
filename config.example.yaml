@@ -8,7 +8,10 @@ Server:
                            # "Authorization: Bearer <token>" (empty = no auth)
 
 Connection:
-  type: "bt"               # "bt" (Bluetooth LE, default) or "serial"
+  type: "bt"               # "bt" (Bluetooth LE, default), "serial" or "tcp" (Wi-Fi/Ethernet)
   # serial_port: "/dev/ttyUSB0"   # when type: "serial"
   # serial_baud: 115200
+  # tcp_address: "192.168.1.50"   # when type: "tcp" — host or host:port (default 5000)
+  # device_name: "MeshCore-AB12"  # when type: "bt" — pick one device by advertised name
+  # device_address: "AA:BB:CC:DD:EE:FF"  # when type: "bt" — or by platform address
   channel_transmissions: 3 # max transmissions per channel message (default 3)

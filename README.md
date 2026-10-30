@@ -59,9 +59,12 @@ Server:
   token: "s3cret"        # optional; empty = no auth
 
 Connection:
-  type: "bt"             # "bt" (BLE, default) or "serial"
-  serial_port: "/dev/ttyUSB0"
+  type: "bt"             # "bt" (BLE, default), "serial" or "tcp" (Wi-Fi/Ethernet)
+  serial_port: "/dev/ttyUSB0"    # when type: "serial"
   serial_baud: 115200
+  # tcp_address: "192.168.1.50"   # when type: "tcp" — host or host:port (default 5000)
+  # device_name: "MeshCore-AB12"  # when type: "bt" — pick one device by advertised name
+  # device_address: "AA:BB:CC:DD:EE:FF"  # when type: "bt" — or by platform address
   channel_transmissions: 3   # max transmissions per channel message (default 3)
 ```
 
@@ -69,7 +72,7 @@ Connection:
 |---|---|---|
 | `Server.listen` | `:8080` | `host:port` for the HTTP server |
 | `Server.token` | *(empty)* | When set, every request must send `Authorization: Bearer <token>` |
-| `Connection.*` | — | Transport to the device — BLE scan or USB serial |
+| `Connection.*` | — | Transport to the device — BLE scan (with optional name/address selection), USB serial or TCP |
 
 ---
 

@@ -35,9 +35,22 @@ type Options struct {
 	ChannelTransmissions int
 }
 
+// deviceClient is the slice of the meshcore client the gateway API uses.
+// Server depends on this interface rather than the concrete client, so the
+// handlers are testable without a radio.
+type deviceClient interface {
+	GetContacts() map[string]*meshcore.Contact
+	GetChannels() map[int]*meshcore.Channel
+	FindContactByName(name string) *meshcore.Contact
+	FindContactByKeyPrefix(prefix []byte) *meshcore.Contact
+	GetChannelByName(name string) *meshcore.Channel
+	SendMessageWithRetry(contact *meshcore.Contact, text string, waitForDelivery bool, savedPathTries, resetPathTries int, timeout time.Duration) error
+	SendChannelMessageWithRetry(channel *meshcore.Channel, text string, waitForDelivery bool, maxRetries, transmissions int, timeout time.Duration) error
+}
+
 // Server serves the HTTP gateway API on top of a live meshcore client.
 type Server struct {
-	client *meshcore.MeshCoreClient
+	client deviceClient
 	inbox  *companion.Inbox
 	opts   Options
 	log    *slog.Logger

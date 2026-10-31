@@ -100,5 +100,8 @@ func newHTTPServer(cfg *config, client *meshcore.MeshCoreClient, inbox *companio
 		// Blocking sends wait through device confirmations and retry pacing —
 		// tens of seconds worst case — so writes get a generous ceiling.
 		WriteTimeout: 90 * time.Second,
+		// Reap idle keep-alive connections; handler time is bounded by
+		// WriteTimeout, so this only needs to cover the between-requests gap.
+		IdleTimeout: 120 * time.Second,
 	}
 }

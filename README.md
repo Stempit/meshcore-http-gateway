@@ -128,8 +128,9 @@ curl -H "Authorization: Bearer s3cret" localhost:8080/get
 | `received_at` | when *this server* got it | when *this server* got it |
 | `id` | sequential server-assigned ID — use it to dedupe across reconnects | same |
 
-Both DMs and channel messages arrive on the same queue, interleaved in
-arrival order.
+Both DMs and channel messages arrive on the same queue. Live messages
+interleave in arrival order; messages synced from device storage at startup
+arrive grouped — stored DMs first, then stored channel messages.
 
 ### `GET /messages?after=<id>` — cursor-based read (non-destructive)
 
@@ -175,7 +176,7 @@ Request body:
 | `type` | ✔ | `"dm"` or `"channel"` |
 | `to` | ✔ | DM: contact **name** or hex **public-key prefix**. Channel: channel **name** or numeric **index** |
 | `text` | ✔ | message text (non-empty) |
-| `ack` | — | `true` = wait for *delivery* confirmation (end-to-end, slower); default `false` = *sent* confirmation |
+| `ack` | — | `true` = wait for *delivery* confirmation (end-to-end, slower) — **DMs only; ignored for `type: "channel"`**, where success means the device queued the transmissions; default `false` = *sent* confirmation |
 
 Responses:
 

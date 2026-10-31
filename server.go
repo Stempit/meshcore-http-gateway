@@ -110,11 +110,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	msgs := s.inbox.Since(after)
+	// One lock: a separate Since + LastID could straddle a new arrival and
+	// hand out a cursor that skips it — the kit's "last_id is always safe"
+	// contract only holds when the pair is read atomically.
+	msgs, lastID := s.inbox.SinceWithLastID(after)
 	writeJSON(w, http.StatusOK, struct {
 		Messages []companion.Message `json:"messages"`
 		LastID   int64               `json:"last_id"`
-	}{Messages: msgs, LastID: s.inbox.LastID()})
+	}{Messages: msgs, LastID: lastID})
 }
 
 // contactInfo is a contact as exposed by GET /contacts.

@@ -35,7 +35,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := connectDevice(cfg, log)
+	client, err := connectDevice(cfg)
 	if err != nil {
 		log.Error("Failed to connect to device", "error", err)
 		os.Exit(1)
@@ -71,7 +71,7 @@ func main() {
 
 // connectDevice opens the device connection selected by the Connection
 // config: BLE (default), USB serial or TCP (Wi-Fi/Ethernet).
-func connectDevice(cfg *config, log *slog.Logger) (*meshcore.MeshCoreClient, error) {
+func connectDevice(cfg *config) (*meshcore.MeshCoreClient, error) {
 	return companion.Connect(companion.ConnectOptions{
 		Type:          cfg.Connection.Type,
 		SerialPort:    cfg.Connection.SerialPort,

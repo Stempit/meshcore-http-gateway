@@ -15,3 +15,11 @@ Connection:
   # device_name: "MeshCore-AB12"  # when type: "bt" — pick one device by advertised name
   # device_address: "AA:BB:CC:DD:EE:FF"  # when type: "bt" — or by platform address
   channel_transmissions: 3 # max transmissions per channel message (default 3)
+
+Push:
+  enabled: false           # when true, every new message is POSTed to
+                           # endpoint_url as it arrives (see push.go)
+  endpoint_url: "http://example.local:9000/hook"  # required when enabled
+  token: ""                # optional; sent to the endpoint as
+                           # "Authorization: Bearer <token>" (empty = no header)
+  timeout_seconds: 10      # per-POST timeout (default 10)

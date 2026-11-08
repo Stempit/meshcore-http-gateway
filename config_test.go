@@ -78,3 +78,34 @@ func TestLoadConfigInvalidYAML(t *testing.T) {
 		t.Fatal("invalid YAML must be an error")
 	}
 }
+
+func TestLoadConfigPushDefaults(t *testing.T) {
+	cfg, err := loadConfig(writeTempConfig(t, "Push:\n  enabled: true\n  endpoint_url: \"http://x.local/hook\"\n"))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Push.TimeoutSeconds != 10 {
+		t.Errorf("TimeoutSeconds = %d, want default 10", cfg.Push.TimeoutSeconds)
+	}
+}
+
+func TestLoadConfigPushValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+	}{
+		{"enabled without endpoint", "Push:\n  enabled: true\n"},
+		{"endpoint without scheme", "Push:\n  enabled: true\n  endpoint_url: \"x.local/hook\"\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := loadConfig(writeTempConfig(t, tc.yaml)); err == nil {
+				t.Errorf("%s must be rejected", tc.name)
+			}
+		})
+	}
+	// A disabled push section needs no endpoint and must load fine.
+	if _, err := loadConfig(writeTempConfig(t, "Push:\n  enabled: false\n")); err != nil {
+		t.Errorf("disabled push without endpoint must load: %v", err)
+	}
+}

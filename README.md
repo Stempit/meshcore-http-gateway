@@ -21,6 +21,8 @@ daemon — anything that can speak HTTP can now speak LoRa.
 - 🔌 **Two-way API.** Poll `/get` (or the cursor-based `/messages`) for new
   messages, POST to `/send` to talk back, list `/contacts` and `/channels`
   as a directory. No SDK, no websocket, no ceremony.
+- 📨 **Push or pull.** Prefer being notified? The gateway can POST every new
+  message to your own webhook endpoint the moment it lands — no polling.
 - 📥 **Nothing gets lost.** Messages that arrived while the server was down
   are synced from the device's storage on startup and served as unread.
 - 📤 **Honest sends.** `/send` blocks until the device confirms the message
@@ -66,6 +68,12 @@ Connection:
   # device_name: "MeshCore-AB12"  # when type: "bt" — pick one device by advertised name
   # device_address: "AA:BB:CC:DD:EE:FF"  # when type: "bt" — or by platform address
   channel_transmissions: 3   # max transmissions per channel message (default 3)
+
+Push:
+  enabled: false         # when true, every new message is POSTed to endpoint_url
+  endpoint_url: "http://example.local:9000/hook"  # required when enabled
+  token: ""              # optional; sent to the endpoint as "Authorization: Bearer <token>"
+  timeout_seconds: 10    # per-POST timeout
 ```
 
 | Key | Default | Meaning |
@@ -73,6 +81,7 @@ Connection:
 | `Server.listen` | `:8080` | `host:port` for the HTTP server |
 | `Server.token` | *(empty)* | When set, every request must send `Authorization: Bearer <token>` |
 | `Connection.*` | — | Transport to the device — BLE scan (with optional name/address selection), USB serial or TCP |
+| `Push.*` | disabled | Webhook delivery of new messages — see [Push mode](#push-mode--webhook-delivery) |
 
 ---
 
@@ -195,6 +204,57 @@ Responses:
 
 ---
 
+## Push mode — webhook delivery
+
+Polling not your thing? Set `Push.enabled: true` and the gateway POSTs every
+new message to your HTTP endpoint the moment it lands:
+
+```yaml
+Push:
+  enabled: true
+  endpoint_url: "http://example.local:9000/hook"  # required
+  token: ""            # optional; sent as "Authorization: Bearer <token>"
+  timeout_seconds: 10  # per-POST timeout (default 10)
+```
+
+Each message is its own POST — the exact same JSON object `/get` returns per
+message. A direct message:
+
+```json
+{"id": 41, "type": "dm", "sender": "Короед", "sender_key": "a1b2c3d4e5f6…",
+ "channel": "", "channel_index": -1, "text": "ping, anyone there?",
+ "timestamp": "2026-10-25T12:00:00Z", "received_at": "2026-10-25T12:00:03Z"}
+```
+
+and a channel message:
+
+```json
+{"id": 42, "type": "channel", "sender": "Wire", "sender_key": "",
+ "channel": "public", "channel_index": 0, "text": "weather looking grim",
+ "timestamp": "2026-10-25T12:00:10Z", "received_at": "2026-10-25T12:00:11Z"}
+```
+
+Headers: `Content-Type: application/json`, plus `Authorization: Bearer <token>`
+when `Push.token` is set. Respond with **any 2xx** to accept a message.
+
+**Delivery semantics**
+
+- Any **2xx** = delivered. Any other **4xx** = the endpoint doesn't want that
+  message — it's dropped (logged) and the next one is sent. Network errors,
+  timeouts, **429 and 5xx** are retried with exponential backoff (2s, doubling,
+  capped at 60s).
+- Messages arrive **in order**, one POST at a time. While the endpoint is down
+  they queue in memory (capped at 1000, oldest dropped first) and replay when
+  it recovers.
+- Push is **live-only**: messages already in the inbox at startup (the device
+  stored-message sync) are not pushed, and the queue does not survive a
+  gateway restart. For guaranteed, replayable consumption use
+  `GET /messages?after=<id>`.
+- Push and pull coexist: a `/get` drain by a pull client never removes
+  anything from the push queue, and vice versa.
+
+---
+
 ## Behavior you should know about
 
 ### `/send` blocks — by design
@@ -274,8 +334,8 @@ features. Don't point two of them at the **same physical device** at the same
 time: a MeshCore companion serves one BLE/serial connection.
 
 Source map: `main.go` (composition root + config), `server.go` (handlers,
-auth, error mapping). The device runtime (connect, startup sync, unread
-inbox, keepalive) comes from
+auth, error mapping), `push.go` (webhook delivery). The device runtime
+(connect, startup sync, unread inbox, keepalive) comes from
 [meshcore-kit](https://github.com/stempit/meshcore-kit); the
 protocol driver from [meshcore-go](https://github.com/stempit/meshcore-go).
 

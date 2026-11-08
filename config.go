@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -43,6 +45,21 @@ type config struct {
 		// delivery against silent RF drops. 0 or unset defaults to 3.
 		ChannelTransmissions int `yaml:"channel_transmissions"`
 	} `yaml:"Connection"`
+
+	Push struct {
+		// Enabled turns on push mode: a background worker POSTs every new
+		// message to EndpointURL as it arrives (see push.go). Default false.
+		Enabled bool `yaml:"enabled"`
+		// EndpointURL is where new messages are pushed — an http:// or
+		// https:// URL that accepts one POST per message (the same JSON as
+		// the /get response's per-message object). Required when Enabled.
+		EndpointURL string `yaml:"endpoint_url"`
+		// Token is an optional bearer token sent to the endpoint as
+		// "Authorization: Bearer <token>". Empty = no header.
+		Token string `yaml:"token"`
+		// TimeoutSeconds bounds each push POST. 0 or unset defaults to 10.
+		TimeoutSeconds int `yaml:"timeout_seconds"`
+	} `yaml:"Push"`
 }
 
 // loadConfig reads and parses the config file, then fills in the documented
@@ -58,7 +75,26 @@ func loadConfig(path string) (*config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	c.normalize()
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
 	return &c, nil
+}
+
+// validate rejects Push settings that would fail on every delivery anyway,
+// so a misconfigured push section stops the process at startup instead of
+// silently delivering nothing.
+func (c *config) validate() error {
+	if !c.Push.Enabled {
+		return nil
+	}
+	if c.Push.EndpointURL == "" {
+		return errors.New("Push.enabled is set but Push.endpoint_url is empty")
+	}
+	if !strings.HasPrefix(c.Push.EndpointURL, "http://") && !strings.HasPrefix(c.Push.EndpointURL, "https://") {
+		return fmt.Errorf("Push.endpoint_url %q must start with http:// or https://", c.Push.EndpointURL)
+	}
+	return nil
 }
 
 // normalize fills defaults into fields the YAML left empty, so callers never
@@ -69,5 +105,8 @@ func (c *config) normalize() {
 	}
 	if c.Connection.ChannelTransmissions <= 0 {
 		c.Connection.ChannelTransmissions = 3
+	}
+	if c.Push.TimeoutSeconds <= 0 {
+		c.Push.TimeoutSeconds = 10
 	}
 }

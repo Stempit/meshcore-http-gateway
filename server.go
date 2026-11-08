@@ -42,6 +42,9 @@ type Options struct {
 	// ChannelTransmissions is the max number of transmissions per channel
 	// message (deduplicated by receivers); loadConfig normalizes unset to 3.
 	ChannelTransmissions int
+	// Transport is the configured connection type ("bt", "serial" or "tcp"),
+	// reported verbatim by GET /status.
+	Transport string
 }
 
 // deviceClient is the slice of the meshcore client the gateway API uses.
@@ -53,6 +56,9 @@ type deviceClient interface {
 	FindContactByName(name string) *meshcore.Contact
 	FindContactByKeyPrefix(prefix []byte) *meshcore.Contact
 	GetChannelByName(name string) *meshcore.Channel
+	GetSelfInfo() *meshcore.SelfInfo
+	GetStats() *meshcore.CompanionRadioStats
+	IsConnected() bool
 	SendMessageWithRetry(contact *meshcore.Contact, text string, waitForDelivery bool, savedPathTries, resetPathTries int, timeout time.Duration) error
 	SendChannelMessageWithRetry(channel *meshcore.Channel, text string, waitForDelivery bool, maxRetries, transmissions int, timeout time.Duration) error
 	RunCLICommand(cmd string) (string, error)
@@ -71,6 +77,21 @@ type Server struct {
 	// from a CLI command issued while a send waits can complete the send's
 	// confirmation spuriously, and vice versa.
 	deviceMu sync.Mutex
+
+	// startedAt is when the HTTP server was built — after the device connect
+	// and the startup sync, not process start; GET /status reports it.
+	startedAt time.Time
+	// clock is the device RTC sampled once at startup (sampleDeviceTime);
+	// zero times mean the sample failed and /status omits it.
+	clock startupClock
+}
+
+// startupClock is the device RTC as sampled once at startup: the reading and
+// when it was taken. GET /status serves both so clients can judge the
+// device's clock drift against their own.
+type startupClock struct {
+	DeviceTime time.Time
+	SampledAt  time.Time
 }
 
 // Routes builds the mux with the API endpoints, wrapped in auth.
@@ -80,6 +101,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /messages", s.handleMessages)
 	mux.HandleFunc("GET /contacts", s.handleContacts)
 	mux.HandleFunc("GET /channels", s.handleChannels)
+	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("POST /send", s.handleSend)
 	mux.HandleFunc("POST /cli", s.handleCLI)
 	return s.withAuth(mux)
@@ -179,6 +201,109 @@ func (s *Server) handleChannels(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
 		Channels []channelInfo `json:"channels"`
 	}{Channels: list})
+}
+
+// statusDevice is the device half of GET /status: identity and radio config
+// from the connect handshake (SelfInfo) — no device traffic at request time.
+type statusDevice struct {
+	Name       string `json:"name"`
+	Model      string `json:"model,omitempty"`
+	Firmware   string `json:"firmware,omitempty"`
+	FreqHz     uint32 `json:"freq_hz"`
+	BwHz       uint32 `json:"bw_hz"`
+	Sf         int    `json:"sf"`
+	Cr         int    `json:"cr"`
+	TxPower    int8   `json:"tx_power"`
+	MaxTxPower int8   `json:"max_tx_power"`
+	// omitempty: an unset advert location parses as 0,0 — treated as "no
+	// location" rather than a node anchored in the Gulf of Guinea.
+	Latitude  float64 `json:"lat,omitempty"`
+	Longitude float64 `json:"lon,omitempty"`
+}
+
+// statusStats is the radio statistics half of GET /status, refreshed by the
+// runtime's 30-second keepalive polls; age_secs says how stale a reading is.
+type statusStats struct {
+	BatteryMv         uint16  `json:"battery_mv"`
+	UptimeSecs        uint32  `json:"uptime_secs"`
+	Errors            uint16  `json:"errors"`
+	QueueLen          uint8   `json:"queue_len"`
+	TxAirSecs         uint32  `json:"tx_air_secs"`
+	RxAirSecs         uint32  `json:"rx_air_secs"`
+	NoiseFloorDbm     int8    `json:"noise_floor_dbm"`
+	LastRssiDbm       int8    `json:"last_rssi_dbm"`
+	LastSnrDb         float32 `json:"last_snr_db"`
+	PacketsRecv       uint32  `json:"packets_recv"`
+	PacketsSent       uint32  `json:"packets_sent"`
+	PacketsRecvErrors uint32  `json:"packets_recv_errors"`
+	AgeSecs           int64   `json:"age_secs"`
+}
+
+// statusInfo is the GET /status body: a cached snapshot of the link and the
+// device. Everything is read from state the gateway already holds, so a
+// /status call never queues behind — or collides with — a send.
+type statusInfo struct {
+	Connected           bool          `json:"connected"`
+	Transport           string        `json:"transport"`
+	Device              *statusDevice `json:"device,omitempty"`
+	Stats               *statusStats  `json:"stats,omitempty"`
+	DeviceTime          *time.Time    `json:"device_time,omitempty"`
+	DeviceTimeSampledAt *time.Time    `json:"device_time_sampled_at,omitempty"`
+	StartedAt           time.Time     `json:"started_at"`
+}
+
+// handleStatus serves the cached device snapshot: connection state, the
+// handshake's self info, the keepalive-refreshed stats and the device clock
+// sampled at startup. `stats` is omitted until the first keepalive poll lands
+// (≤30s after start); `device_time` is omitted when the startup sample failed.
+func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
+	info := statusInfo{
+		Connected: s.client.IsConnected(),
+		Transport: s.opts.Transport,
+		StartedAt: s.startedAt,
+	}
+	if si := s.client.GetSelfInfo(); si != nil {
+		info.Device = &statusDevice{
+			Name:       si.Name,
+			Model:      si.Model,
+			Firmware:   si.FirmwareVersion,
+			FreqHz:     si.FreqHz,
+			BwHz:       si.BwHz,
+			Sf:         si.Sf,
+			Cr:         si.Cr,
+			TxPower:    si.TxPower,
+			MaxTxPower: si.MaxTxPower,
+			Latitude:   si.Latitude,
+			Longitude:  si.Longitude,
+		}
+	}
+	if st := s.client.GetStats(); st != nil {
+		// A clock jump between sample and report could make the age negative;
+		// never report one.
+		age := max(time.Since(st.LastUpdate), 0)
+		info.Stats = &statusStats{
+			BatteryMv:         st.BatteryMv,
+			UptimeSecs:        st.UptimeSecs,
+			Errors:            st.Errors,
+			QueueLen:          st.QueueLen,
+			TxAirSecs:         st.TxAirSecs,
+			RxAirSecs:         st.RxAirSecs,
+			NoiseFloorDbm:     st.NoiseFloorDbm,
+			LastRssiDbm:       st.LastRssi,
+			LastSnrDb:         st.LastSnrDb,
+			PacketsRecv:       st.PacketsRecv,
+			PacketsSent:       st.PacketsSent,
+			PacketsRecvErrors: st.PacketsRecvErrors,
+			AgeSecs:           int64(age.Seconds()),
+		}
+	}
+	if !s.clock.DeviceTime.IsZero() {
+		ts := s.clock.DeviceTime
+		info.DeviceTime = &ts
+		at := s.clock.SampledAt
+		info.DeviceTimeSampledAt = &at
+	}
+	writeJSON(w, http.StatusOK, info)
 }
 
 // sendRequest is the POST /send body.
@@ -354,7 +479,13 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
+	// HTML escaping is off: consumers parse JSON, where \u003c/\u003e are
+	// identical to </> anyway, while raw readers (curl, logs) should see the
+	// real characters. The response is application/json, never embedded into
+	// HTML, so the escaping protects nothing here.
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
 	// Past WriteHeader a failure can only truncate the response; nothing
 	// actionable remains, so the encode error is dropped.
-	_ = json.NewEncoder(w).Encode(v)
+	_ = enc.Encode(v)
 }

@@ -20,8 +20,8 @@ daemon — anything that can speak HTTP can now speak LoRa.
 
 - 🔌 **Two-way API.** Poll `/get` (or the cursor-based `/messages`) for new
   messages, POST to `/send` to talk back, list `/contacts` and `/channels`
-  as a directory, and reach the device itself via `POST /cli`. No SDK, no
-  websocket, no ceremony.
+  as a directory, check the link via `/status`, and reach the device itself
+  via `POST /cli`. No SDK, no websocket, no ceremony.
 - 📨 **Push or pull.** Prefer being notified? The gateway can POST every new
   message to your own webhook endpoint the moment it lands — no polling.
 - 📥 **Nothing gets lost.** Messages that arrived while the server was down
@@ -169,6 +169,69 @@ Read-only listings to resolve recipients before `POST /send`:
 ```
 
 `/contacts` is sorted by name; `/channels` by index and skips empty slots.
+
+### `GET /status` — device and link snapshot
+
+A cached view of the device: a `/status` call generates **no radio traffic**
+and never queues behind a send. Identity and radio config come from the
+connect handshake, statistics from the runtime's 30-second keepalive polls,
+and the device clock is sampled once at startup.
+
+```sh
+curl -H "Authorization: Bearer s3cret" localhost:8080/status
+```
+
+```json
+{
+  "connected": true,
+  "transport": "bt",
+  "device": {
+    "name": "Bot-AB12",
+    "model": "Heltec V3",
+    "firmware": "1.8.0",
+    "freq_hz": 869618000,
+    "bw_hz": 250000,
+    "sf": 9,
+    "cr": 5,
+    "tx_power": 14,
+    "max_tx_power": 22,
+    "lat": 55.75,
+    "lon": 37.61
+  },
+  "stats": {
+    "battery_mv": 3980,
+    "uptime_secs": 12345,
+    "errors": 0,
+    "queue_len": 0,
+    "tx_air_secs": 512,
+    "rx_air_secs": 1024,
+    "noise_floor_dbm": -112,
+    "last_rssi_dbm": -98,
+    "last_snr_db": 7.5,
+    "packets_recv": 9021,
+    "packets_sent": 1032,
+    "packets_recv_errors": 3,
+    "age_secs": 12
+  },
+  "device_time": "2026-11-09T12:00:00Z",
+  "device_time_sampled_at": "2026-11-09T12:00:01Z",
+  "started_at": "2026-11-09T11:58:20Z"
+}
+```
+
+**Field notes**
+
+| Field | Meaning |
+|---|---|
+| `connected` | live link to the device (drops are reconnected in the background) |
+| `transport` | configured connection type: `bt`, `serial` or `tcp` |
+| `device` | identity and radio config from the handshake; omitted until the handshake completes. `lat`/`lon` are omitted when the node has no location set (0,0 counts as unset) |
+| `stats` | battery/airtime/packet counters, refreshed every 30 s by the keepalive; `age_secs` is how old the reading is. Omitted until the first poll lands (≤30 s after start) |
+| `device_time` / `device_time_sampled_at` | the device's RTC read once at startup, and when it was read — compare with your own clock to see drift; omitted if the startup sample failed. The firmware syncs its RTC from the host at connect, so a visible drift means that sync failed |
+| `started_at` | when the HTTP server was built (after device connect and the startup sync) |
+
+Note that `/status` reports your node's configured location — the bearer
+token grants it, same as everything else on this API.
 
 ### `POST /send` — send a message over the mesh
 

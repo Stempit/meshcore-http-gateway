@@ -1,10 +1,10 @@
 // meshcore-http-gateway runs a MeshCore LoRa device as a thin HTTP gateway:
 // everything the radio receives accumulates in an unread inbox exposed via
 // GET /get (and the cursor-based /messages), external clients send mesh
-// messages via POST /send, and device-level CLI commands go through
-// POST /cli. Optionally the inbox is also pushed — every new message POSTed
-// to a configured webhook endpoint (push.go). See server.go for the API and
-// README.md for docs.
+// messages via POST /send, device-level CLI commands go through POST /cli,
+// and GET /status serves a cached device snapshot. Optionally the inbox is
+// also pushed — every new message POSTed to a configured webhook endpoint
+// (push.go). See server.go for the API and README.md for docs.
 //
 // It is a standalone feature with its own device connection — independent of
 // the bot and the voice bridge. Don't run it against the same physical device
@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,6 +46,11 @@ func main() {
 	}
 	defer client.Disconnect()
 
+	// Sample the device clock while the wire is quiet — before the stored
+	// message sync starts: GET /status serves the reading with its sample
+	// time. Failure is logged, not fatal: /status just omits it.
+	clock := sampleDeviceTime(client, log)
+
 	// Device runtime: startup stored-message sync, live forwarding into the
 	// inbox, keepalive/reconnect loop.
 	svc := companion.NewService(client, log)
@@ -58,13 +64,13 @@ func main() {
 		log.Info("Push enabled", "endpoint", cfg.Push.EndpointURL, "auth", cfg.Push.Token != "")
 	}
 
-	httpSrv := newHTTPServer(cfg, client, svc.Inbox, log)
+	httpSrv := newHTTPServer(cfg, client, svc.Inbox, clock, log)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- httpSrv.ListenAndServe() }()
 
 	log.Info("HTTP gateway listening", "addr", cfg.Server.Listen, "auth", cfg.Server.Token != "")
-	log.Info("Endpoints: GET /get, GET /messages, GET /contacts, GET /channels, POST /send, POST /cli")
+	log.Info("Endpoints: GET /get, GET /messages, GET /contacts, GET /channels, GET /status, POST /send, POST /cli")
 
 	select {
 	case <-ctx.Done():
@@ -93,16 +99,46 @@ func connectDevice(cfg *config) (*meshcore.MeshCoreClient, error) {
 	})
 }
 
+// sampleDeviceTime reads the device's RTC once via GetDeviceTime. It runs
+// before svc.Start so the query does not interleave with the stored-message
+// sync traffic; a failure leaves the zero clock, which /status omits.
+func sampleDeviceTime(client *meshcore.MeshCoreClient, log *slog.Logger) startupClock {
+	at := time.Now()
+	ts, err := client.GetDeviceTime()
+	if err != nil {
+		log.Warn("Failed to sample device time; /status will omit it", "error", err)
+		return startupClock{}
+	}
+	return startupClock{DeviceTime: ts, SampledAt: at}
+}
+
+// normalizeTransport maps the configured connection type to the canonical
+// transport name GET /status reports: empty means the default BLE, and
+// "wifi" is an alias of "tcp" (both accepted by companion.Connect).
+func normalizeTransport(t string) string {
+	t = strings.ToLower(strings.TrimSpace(t))
+	if t == "" {
+		return "bt"
+	}
+	if t == "wifi" {
+		return "tcp"
+	}
+	return t
+}
+
 // newHTTPServer wires the gateway API onto the device client and inbox.
-func newHTTPServer(cfg *config, client *meshcore.MeshCoreClient, inbox *companion.Inbox, log *slog.Logger) *http.Server {
+func newHTTPServer(cfg *config, client *meshcore.MeshCoreClient, inbox *companion.Inbox, clock startupClock, log *slog.Logger) *http.Server {
 	srv := &Server{
 		client: client,
 		inbox:  inbox,
 		opts: Options{
 			Token:                cfg.Server.Token,
 			ChannelTransmissions: cfg.Connection.ChannelTransmissions,
+			Transport:            normalizeTransport(cfg.Connection.Type),
 		},
-		log: log,
+		startedAt: time.Now(),
+		clock:     clock,
+		log:       log,
 	}
 	return &http.Server{
 		Addr:              cfg.Server.Listen,

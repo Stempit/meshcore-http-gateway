@@ -37,6 +37,11 @@ type fakeClient struct {
 	sendHook func()
 	cliHook  func()
 
+	// Status scripting: the cached snapshot GET /status serves.
+	selfInfo  *meshcore.SelfInfo
+	stats     *meshcore.CompanionRadioStats
+	connected bool
+
 	sentDMs     []sentDM
 	sentChannel []sentChannel
 }
@@ -83,6 +88,10 @@ func (f *fakeClient) GetChannelByName(name string) *meshcore.Channel {
 	return nil
 }
 
+func (f *fakeClient) GetSelfInfo() *meshcore.SelfInfo         { return f.selfInfo }
+func (f *fakeClient) GetStats() *meshcore.CompanionRadioStats { return f.stats }
+func (f *fakeClient) IsConnected() bool                       { return f.connected }
+
 func (f *fakeClient) SendMessageWithRetry(contact *meshcore.Contact, text string, ack bool, _, _ int, _ time.Duration) error {
 	if f.sendHook != nil {
 		f.sendHook()
@@ -118,10 +127,11 @@ func (f *fakeClient) RunCLICommand(cmd string) (string, error) {
 
 func newTestServer(c deviceClient) *Server {
 	return &Server{
-		client: c,
-		inbox:  &companion.Inbox{},
-		opts:   Options{Token: ""},
-		log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		client:    c,
+		inbox:     &companion.Inbox{},
+		opts:      Options{Token: ""},
+		startedAt: time.Now(),
+		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 }
 
@@ -457,8 +467,15 @@ func TestHandleCLI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("cli command: status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
+	// Raw bytes first: decodeBody drains the recorder's buffer.
+	raw := rec.Body.String()
 	if body := decodeBody(t, rec); body["reply"] != "> 869.618" {
 		t.Errorf("reply not passed through verbatim: %v", body["reply"])
+	}
+	// The raw body must carry the real characters, not \u003e-style HTML
+	// escapes — curl readers see the response as-is.
+	if strings.Contains(raw, "\\u003e") || !strings.Contains(raw, "> 869.618") {
+		t.Errorf("reply body HTML-escaped or wrong: %s", raw)
 	}
 	if fc.cliCmd != "get tx" {
 		t.Errorf("command not forwarded: %q", fc.cliCmd)
@@ -556,5 +573,90 @@ func TestHandleCLIWaitsForInFlightSend(t *testing.T) {
 	defer mu.Unlock()
 	if len(events) != 2 || events[0] != "send" || events[1] != "cli" {
 		t.Errorf("device round trips interleaved: events = %v, want [send cli]", events)
+	}
+}
+
+func TestHandleStatus(t *testing.T) {
+	fc := &fakeClient{
+		connected: true,
+		selfInfo: &meshcore.SelfInfo{
+			Name: "Bot-AB12", Model: "Heltec V3", FirmwareVersion: "1.8.0",
+			FreqHz: 869618000, BwHz: 250000, Sf: 9, Cr: 5,
+			TxPower: 14, MaxTxPower: 22, Latitude: 55.75, Longitude: 37.61,
+		},
+		stats: &meshcore.CompanionRadioStats{
+			BatteryMv: 3980, UptimeSecs: 12345, LastRssi: -98,
+			LastUpdate: time.Now().Add(-2 * time.Minute),
+		},
+	}
+	s := newTestServer(fc)
+	s.opts.Transport = "bt"
+	s.clock = startupClock{
+		DeviceTime: time.Unix(1762612345, 0).UTC(),
+		SampledAt:  time.Now(),
+	}
+
+	rec := doRequest(s, "GET", "/status", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/status: status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	body := decodeBody(t, rec)
+	if body["connected"] != true {
+		t.Errorf("connected = %v, want true", body["connected"])
+	}
+	if body["transport"] != "bt" {
+		t.Errorf("transport = %v, want the configured connection type", body["transport"])
+	}
+	dev, ok := body["device"].(map[string]any)
+	if !ok || dev["name"] != "Bot-AB12" || dev["model"] != "Heltec V3" || dev["firmware"] != "1.8.0" {
+		t.Errorf("device block not built from self info: %v", dev)
+	}
+	st, ok := body["stats"].(map[string]any)
+	if !ok {
+		t.Fatalf("stats block missing: %v", body)
+	}
+	if st["battery_mv"] != float64(3980) {
+		t.Errorf("battery_mv = %v, want 3980", st["battery_mv"])
+	}
+	if age, ok := st["age_secs"].(float64); !ok || age < 119 || age > 125 {
+		t.Errorf("age_secs = %v, want ~120 (the scripted stats staleness)", st["age_secs"])
+	}
+	if _, ok := body["device_time"]; !ok {
+		t.Error("device_time missing although the startup clock was sampled")
+	}
+	if _, ok := body["device_time_sampled_at"]; !ok {
+		t.Error("device_time_sampled_at missing although the startup clock was sampled")
+	}
+	if _, ok := body["started_at"]; !ok {
+		t.Error("started_at missing")
+	}
+
+	// A bare server omits everything optional instead of emitting zeroes.
+	bare := newTestServer(&fakeClient{})
+	rec = doRequest(bare, "GET", "/status", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bare /status: status = %d, want 200", rec.Code)
+	}
+	body = decodeBody(t, rec)
+	if body["connected"] != false {
+		t.Errorf("bare connected = %v, want false", body["connected"])
+	}
+	for _, key := range []string{"device", "stats", "device_time", "device_time_sampled_at"} {
+		if _, ok := body[key]; ok {
+			t.Errorf("bare server: %q must be omitted, got %v", key, body[key])
+		}
+	}
+
+	// A future LastUpdate (host clock jumped backwards since the sample)
+	// clamps to a zero age, never a negative one.
+	fc.stats = &meshcore.CompanionRadioStats{BatteryMv: 1, LastUpdate: time.Now().Add(time.Hour)}
+	rec = doRequest(s, "GET", "/status", "", nil)
+	body = decodeBody(t, rec)
+	st, ok = body["stats"].(map[string]any)
+	if !ok {
+		t.Fatalf("stats block missing: %v", body)
+	}
+	if age, ok := st["age_secs"].(float64); !ok || age != 0 {
+		t.Errorf("future LastUpdate: age_secs = %v, want 0", st["age_secs"])
 	}
 }

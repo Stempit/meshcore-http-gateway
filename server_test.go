@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,15 @@ type fakeClient struct {
 
 	dmErr      error
 	channelErr error
+
+	// CLI scripting: cliReply/cliErr stand in for the device's answer,
+	// cliCmd records the last command, the hooks let a test pause a device
+	// round trip mid-flight (sendHook/cliHook) to observe serialization.
+	cliReply string
+	cliErr   error
+	cliCmd   string
+	sendHook func()
+	cliHook  func()
 
 	sentDMs     []sentDM
 	sentChannel []sentChannel
@@ -74,6 +84,9 @@ func (f *fakeClient) GetChannelByName(name string) *meshcore.Channel {
 }
 
 func (f *fakeClient) SendMessageWithRetry(contact *meshcore.Contact, text string, ack bool, _, _ int, _ time.Duration) error {
+	if f.sendHook != nil {
+		f.sendHook()
+	}
 	if f.dmErr != nil {
 		return f.dmErr
 	}
@@ -82,11 +95,25 @@ func (f *fakeClient) SendMessageWithRetry(contact *meshcore.Contact, text string
 }
 
 func (f *fakeClient) SendChannelMessageWithRetry(ch *meshcore.Channel, text string, ack bool, _, _ int, _ time.Duration) error {
+	if f.sendHook != nil {
+		f.sendHook()
+	}
 	if f.channelErr != nil {
 		return f.channelErr
 	}
 	f.sentChannel = append(f.sentChannel, sentChannel{channel: ch, text: text, ack: ack})
 	return nil
+}
+
+func (f *fakeClient) RunCLICommand(cmd string) (string, error) {
+	if f.cliHook != nil {
+		f.cliHook()
+	}
+	f.cliCmd = cmd
+	if f.cliErr != nil {
+		return "", f.cliErr
+	}
+	return f.cliReply, nil
 }
 
 func newTestServer(c deviceClient) *Server {
@@ -419,5 +446,115 @@ func TestHandleContactsAndChannels(t *testing.T) {
 	c1, _ := channels[1].(map[string]any)
 	if c0["index"] != float64(0) || c0["name"] != "public" || c1["index"] != float64(2) {
 		t.Errorf("/channels not sorted by index with empty slots skipped: %v %v", c0, c1)
+	}
+}
+
+func TestHandleCLI(t *testing.T) {
+	fc := &fakeClient{cliReply: "> 869.618"}
+	s := newTestServer(fc)
+
+	rec := doRequest(s, "POST", "/cli", `{"command":"get tx"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cli command: status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if body := decodeBody(t, rec); body["reply"] != "> 869.618" {
+		t.Errorf("reply not passed through verbatim: %v", body["reply"])
+	}
+	if fc.cliCmd != "get tx" {
+		t.Errorf("command not forwarded: %q", fc.cliCmd)
+	}
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"invalid JSON", "{nope"},
+		{"missing command", `{}`},
+		{"whitespace command", `{"command":"   "}`},
+		{"too short", `{"command":"v"}`},
+		{"too long", `{"command":"` + strings.Repeat("x", 161) + `"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doRequest(s, "POST", "/cli", tc.body, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("body %q: status = %d, want 400", tc.body, rec.Code)
+			}
+		})
+	}
+
+	fc.cliErr = &meshcore.DeviceError{Code: 0x01}
+	rec = doRequest(s, "POST", "/cli", `{"command":"ver"}`, nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("device-rejected command: status = %d, want 502", rec.Code)
+	}
+	// A device rejection reports the device's own error, unprefixed —
+	// distinct from the default branch's "cli command failed: ..." wrapper.
+	if body := rec.Body.String(); !strings.Contains(body, "device error 1 (unsupported_cmd)") || strings.Contains(body, "cli command failed") {
+		t.Errorf("device rejection body must surface the device error verbatim, got %s", body)
+	}
+
+	fc.cliErr = fmt.Errorf("cli: %w", meshcore.ErrNoResponse)
+	rec = doRequest(s, "POST", "/cli", `{"command":"ver"}`, nil)
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Errorf("unanswered command: status = %d, want 504", rec.Code)
+	}
+}
+
+// TestHandleCLIWaitsForInFlightSend pins the serialization contract: the
+// device path is shared, so a /cli issued while /send is in flight must queue
+// behind it instead of interleaving command frames with the send's
+// confirmation window.
+func TestHandleCLIWaitsForInFlightSend(t *testing.T) {
+	yorick := &meshcore.Contact{Name: "Yorick 💀", PublicKey: []byte{1, 2, 3, 4}}
+	fc := &fakeClient{
+		contacts: map[string]*meshcore.Contact{"yorick": yorick},
+		cliReply: "> 869.618",
+	}
+	s := newTestServer(fc)
+
+	sendStarted := make(chan struct{})
+	releaseSend := make(chan struct{})
+	var mu sync.Mutex
+	var events []string
+	fc.sendHook = func() {
+		mu.Lock()
+		events = append(events, "send")
+		mu.Unlock()
+		close(sendStarted)
+		<-releaseSend
+	}
+	fc.cliHook = func() {
+		mu.Lock()
+		events = append(events, "cli")
+		mu.Unlock()
+	}
+
+	sendDone := make(chan struct{})
+	go func() {
+		doRequest(s, "POST", "/send", `{"type":"dm","to":"Yorick 💀","text":"hi"}`, nil)
+		close(sendDone)
+	}()
+	<-sendStarted
+
+	cliDone := make(chan struct{})
+	go func() {
+		doRequest(s, "POST", "/cli", `{"command":"get tx"}`, nil)
+		close(cliDone)
+	}()
+	select {
+	case <-cliDone:
+		t.Fatal("/cli completed while /send was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseSend)
+	<-sendDone
+	<-cliDone
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[0] != "send" || events[1] != "cli" {
+		t.Errorf("device round trips interleaved: events = %v, want [send cli]", events)
 	}
 }

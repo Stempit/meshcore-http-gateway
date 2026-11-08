@@ -5,11 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/stempit/meshcore-go"
@@ -23,6 +25,13 @@ const (
 	savedPathTries    = 3
 	resetPathTries    = 3
 	channelMaxRetries = 1
+	// maxCLICommandLen mirrors the firmware's CLI line buffer that meshcore-go
+	// enforces client-side (maxCliCommandLen): rejecting over-long commands
+	// here turns what the driver would report as a device failure into a 400.
+	maxCLICommandLen = 160
+	// maxBodyBytes caps every request body; the largest legitimate payload is
+	// a /send text, so anything past this is garbage by definition.
+	maxBodyBytes = 64 * 1024
 )
 
 // Options carries the gateway's policy settings.
@@ -46,6 +55,7 @@ type deviceClient interface {
 	GetChannelByName(name string) *meshcore.Channel
 	SendMessageWithRetry(contact *meshcore.Contact, text string, waitForDelivery bool, savedPathTries, resetPathTries int, timeout time.Duration) error
 	SendChannelMessageWithRetry(channel *meshcore.Channel, text string, waitForDelivery bool, maxRetries, transmissions int, timeout time.Duration) error
+	RunCLICommand(cmd string) (string, error)
 }
 
 // Server serves the HTTP gateway API on top of a live meshcore client.
@@ -54,6 +64,13 @@ type Server struct {
 	inbox  *companion.Inbox
 	opts   Options
 	log    *slog.Logger
+
+	// deviceMu serializes device round trips: message sends and CLI commands
+	// must never overlap on the wire. The driver's confirmation slots are
+	// command-agnostic (the protocol has no sequence numbers) — a stray OK
+	// from a CLI command issued while a send waits can complete the send's
+	// confirmation spuriously, and vice versa.
+	deviceMu sync.Mutex
 }
 
 // Routes builds the mux with the API endpoints, wrapped in auth.
@@ -64,6 +81,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /contacts", s.handleContacts)
 	mux.HandleFunc("GET /channels", s.handleChannels)
 	mux.HandleFunc("POST /send", s.handleSend)
+	mux.HandleFunc("POST /cli", s.handleCLI)
 	return s.withAuth(mux)
 }
 
@@ -173,7 +191,7 @@ type sendRequest struct {
 
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request) {
 	var req sendRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
@@ -229,6 +247,8 @@ func (s *Server) sendDM(w http.ResponseWriter, req sendRequest) {
 		return
 	}
 	s.log.Info("POST /send dm", "to", contact.Name, "text", req.Text, "ack", req.Ack)
+	s.deviceMu.Lock()
+	defer s.deviceMu.Unlock()
 	err := s.client.SendMessageWithRetry(contact, req.Text, req.Ack, savedPathTries, resetPathTries, sendTimeoutPerTry)
 	s.writeSendResult(w, err)
 }
@@ -240,6 +260,8 @@ func (s *Server) sendChannel(w http.ResponseWriter, req sendRequest) {
 		return
 	}
 	s.log.Info("POST /send channel", "to", ch.Name, "text", req.Text, "ack", req.Ack)
+	s.deviceMu.Lock()
+	defer s.deviceMu.Unlock()
 	err := s.client.SendChannelMessageWithRetry(ch, req.Text, req.Ack, channelMaxRetries, s.opts.ChannelTransmissions, sendTimeoutPerTry)
 	s.writeSendResult(w, err)
 }
@@ -259,6 +281,69 @@ func (s *Server) writeSendResult(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, err.Error())
 	default:
 		writeError(w, http.StatusBadGateway, "send failed: "+err.Error())
+	}
+}
+
+// cliRequest is the POST /cli body.
+type cliRequest struct {
+	Command string `json:"command"`
+}
+
+// handleCLI runs one ASCII CLI command on the device itself (companion
+// firmware v14+) and returns the device's verbatim reply — `ver`, `get tx`,
+// `set radio ...`, `reboot`, everything in the firmware's docs/cli_commands.md.
+//
+// The reply is the device's own text, not a parsed result: `get` commands
+// answer "> <value>", a failed command answers "Error, ..." — those come back
+// as 200 replies (the command ran; the device just said no). HTTP errors are
+// for the request itself or the command not running at all: 400 for a
+// malformed request, 502 when the device rejects the command (e.g.
+// unsupported_cmd on firmware older than v14) or the transport fails, 504
+// when the device does not answer in time.
+//
+// The device path is shared with /send, so the gateway serializes both behind
+// deviceMu: a /cli issued while a send is in flight waits for it (tens of
+// seconds worst case), and a /send issued while a CLI command waits for its
+// reply does the same.
+func (s *Server) handleCLI(w http.ResponseWriter, r *http.Request) {
+	var req cliRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	cmd := strings.TrimSpace(req.Command)
+	if cmd == "" {
+		writeError(w, http.StatusBadRequest, `"command" is required`)
+		return
+	}
+	// The 2-character floor mirrors the driver's RunCLICommand minimum: below
+	// it the driver rejects without touching the device, so it is client
+	// input and gets a 400.
+	if len(cmd) < 2 {
+		writeError(w, http.StatusBadRequest, "command too short (min 2 characters)")
+		return
+	}
+	if len(cmd) > maxCLICommandLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("command too long (%d bytes, max %d)", len(cmd), maxCLICommandLen))
+		return
+	}
+	s.log.Info("POST /cli", "command", cmd)
+
+	s.deviceMu.Lock()
+	defer s.deviceMu.Unlock()
+	reply, err := s.client.RunCLICommand(cmd)
+	if err == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
+		return
+	}
+	var devErr *meshcore.DeviceError
+	switch {
+	case errors.As(err, &devErr):
+		writeError(w, http.StatusBadGateway, err.Error())
+	case errors.Is(err, meshcore.ErrNoResponse):
+		writeError(w, http.StatusGatewayTimeout, err.Error())
+	default:
+		writeError(w, http.StatusBadGateway, "cli command failed: "+err.Error())
 	}
 }
 

@@ -20,7 +20,8 @@ daemon — anything that can speak HTTP can now speak LoRa.
 
 - 🔌 **Two-way API.** Poll `/get` (or the cursor-based `/messages`) for new
   messages, POST to `/send` to talk back, list `/contacts` and `/channels`
-  as a directory. No SDK, no websocket, no ceremony.
+  as a directory, and reach the device itself via `POST /cli`. No SDK, no
+  websocket, no ceremony.
 - 📨 **Push or pull.** Prefer being notified? The gateway can POST every new
   message to your own webhook endpoint the moment it lands — no polling.
 - 📥 **Nothing gets lost.** Messages that arrived while the server was down
@@ -201,6 +202,55 @@ Responses:
 ```json
 {"status": "sent"}
 ```
+
+### `POST /cli` — run a device CLI command (advanced)
+
+Runs one ASCII CLI command **on the device itself** (companion firmware v14+)
+and returns the device's verbatim reply: `ver`, `get tx`,
+`set radio 869.618,250,9,5`, `reboot` — everything in the firmware's
+`docs/cli_commands.md`. This is the escape hatch for device management from
+HTTP; messages over the mesh still go through `POST /send`.
+
+```sh
+curl -X POST localhost:8080/cli \
+  -H "Authorization: Bearer s3cret" \
+  -H "Content-Type: application/json" \
+  -d '{"command": "get tx"}'
+```
+
+```json
+{"reply": "> 869.618"}
+```
+
+Request body:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `command` | ✔ | the CLI command text, at most 160 bytes (the firmware's line buffer) |
+
+The `reply` is the device's own text, not a parsed result: `get` commands
+answer `"> <value>"`, a failed command answers `Error, ...` — those are **200**
+responses (the command ran; the device just said no).
+
+Responses:
+
+| Status | When |
+|---|---|
+| `200` | command ran; body is the device's reply |
+| `400` | invalid JSON, missing/empty `command`, or length outside the 2–160 byte range |
+| `401` | missing/wrong bearer token (only if `Server.token` is set) |
+| `502` | device rejected the command — e.g. `unsupported_cmd` on firmware older than v14 — or transport failure |
+| `504` | the device did not answer in time |
+
+**Handle with care.** This exposes the device's *full* CLI — `reboot`,
+`factory reset`, radio reconfiguration included. Behind `Server.token` that is
+as safe as your token; without one it is safe only on a trusted network.
+
+Like `/send`, the command runs on the shared device path: a `/cli` issued
+while a send is in flight waits for it to finish (tens of seconds worst case),
+so give your HTTP client the same generous timeout as `/send`. And like
+`/send`, a queued command is **not cancelled** if its client times out or
+disconnects — no reply does not mean nothing happened.
 
 ---
 

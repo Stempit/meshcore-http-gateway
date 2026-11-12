@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,30 @@ type fakeClient struct {
 	sendHook func()
 	cliHook  func()
 
+	// Admin scripting: the error fields stand in for device outcomes, the
+	// result fields for what the device would answer, and the records let
+	// tests assert what was written to the device. adminHook lets a test
+	// pause any admin round trip mid-flight (serialization tests).
+	listContactsRes  []*meshcore.Contact
+	listContactsErr  error
+	listChannelsRes  []*meshcore.Channel
+	listChannelsErr  error
+	getByKeyRes      *meshcore.Contact
+	getByKeyErr      error
+	addContactErr    error
+	removeContactErr error
+	addChannelRes    *meshcore.Channel
+	addChannelErr    error
+	setChannelErr    error
+	removeChannelErr error
+	adminHook        func()
+
+	addedContacts   []*meshcore.Contact
+	removedKeys     []string
+	getByKeyCalls   int
+	addedChannels   []channelOp
+	removedChannels []int
+
 	// Status scripting: the cached snapshot GET /status serves.
 	selfInfo  *meshcore.SelfInfo
 	stats     *meshcore.CompanionRadioStats
@@ -44,6 +69,17 @@ type fakeClient struct {
 
 	sentDMs     []sentDM
 	sentChannel []sentChannel
+}
+
+// channelOp records one POST /channels device write so a test can assert
+// which slot got which name and key. kind is "add", "create_private",
+// "join_public", "join_hashtag" or "set"; RemoveChannel records separately
+// in removedChannels.
+type channelOp struct {
+	kind  string
+	name  string
+	psk   []byte
+	index int
 }
 
 type sentDM struct {
@@ -123,6 +159,96 @@ func (f *fakeClient) RunCLICommand(cmd string) (string, error) {
 		return "", f.cliErr
 	}
 	return f.cliReply, nil
+}
+
+// adminEntered marks an admin device round trip in the records and runs the
+// serialization hook; every scripted admin method calls it first.
+func (f *fakeClient) adminEntered() {
+	if f.adminHook != nil {
+		f.adminHook()
+	}
+}
+
+func (f *fakeClient) ListContacts() ([]*meshcore.Contact, error) {
+	f.adminEntered()
+	return f.listContactsRes, f.listContactsErr
+}
+
+func (f *fakeClient) ListChannels() ([]*meshcore.Channel, error) {
+	f.adminEntered()
+	return f.listChannelsRes, f.listChannelsErr
+}
+
+func (f *fakeClient) GetContactByKey(pubKey []byte) (*meshcore.Contact, error) {
+	f.adminEntered()
+	f.getByKeyCalls++
+	if f.getByKeyErr != nil {
+		return nil, f.getByKeyErr
+	}
+	return f.getByKeyRes, nil
+}
+
+func (f *fakeClient) AddContact(ct *meshcore.Contact) error {
+	f.adminEntered()
+	if f.addContactErr != nil {
+		return f.addContactErr
+	}
+	f.addedContacts = append(f.addedContacts, ct)
+	return nil
+}
+
+func (f *fakeClient) RemoveContact(ct *meshcore.Contact) error {
+	f.adminEntered()
+	if f.removeContactErr != nil {
+		return f.removeContactErr
+	}
+	f.removedKeys = append(f.removedKeys, hex.EncodeToString(ct.PublicKey))
+	return nil
+}
+
+// addChannelResult is the shared body of the four channel-entry methods: run
+// the admin hook, stand in for the device outcome, record the op.
+func (f *fakeClient) addChannelResult(kind, name string, psk []byte) (*meshcore.Channel, error) {
+	f.adminEntered()
+	if f.addChannelErr != nil {
+		return nil, f.addChannelErr
+	}
+	f.addedChannels = append(f.addedChannels, channelOp{kind: kind, name: name, psk: psk})
+	return f.addChannelRes, nil
+}
+
+func (f *fakeClient) AddChannel(name string, psk []byte) (*meshcore.Channel, error) {
+	return f.addChannelResult("add", name, psk)
+}
+
+func (f *fakeClient) CreatePrivateChannel(name string) (*meshcore.Channel, error) {
+	return f.addChannelResult("create_private", name, nil)
+}
+
+func (f *fakeClient) JoinPublicChannel(name string) (*meshcore.Channel, error) {
+	return f.addChannelResult("join_public", name, nil)
+}
+
+func (f *fakeClient) JoinHashtagChannel(name string) (*meshcore.Channel, error) {
+	return f.addChannelResult("join_hashtag", name, nil)
+}
+
+func (f *fakeClient) SetChannel(index int, name string, psk []byte) error {
+	f.adminEntered()
+	if f.setChannelErr != nil {
+		return f.setChannelErr
+	}
+	f.addedChannels = append(f.addedChannels, channelOp{kind: "set", name: name, psk: psk, index: index})
+	return nil
+}
+
+func (f *fakeClient) RemoveChannel(index int) error {
+	f.adminEntered()
+	if f.removeChannelErr != nil {
+		return f.removeChannelErr
+	}
+	f.removedChannels = append(f.removedChannels, index)
+	return nil
 }
 
 func newTestServer(c deviceClient) *Server {

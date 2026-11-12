@@ -62,6 +62,22 @@ type deviceClient interface {
 	SendMessageWithRetry(contact *meshcore.Contact, text string, waitForDelivery bool, savedPathTries, resetPathTries int, timeout time.Duration) error
 	SendChannelMessageWithRetry(channel *meshcore.Channel, text string, waitForDelivery bool, maxRetries, transmissions int, timeout time.Duration) error
 	RunCLICommand(cmd string) (string, error)
+	// Contact administration (meshcore-go v0.4.0): every call is a
+	// synchronous device round trip that updates the driver's cache on
+	// success, so the cached directory and /send resolution stay consistent
+	// without any gateway-side invalidation.
+	GetContactByKey(pubKey []byte) (*meshcore.Contact, error)
+	AddContact(contact *meshcore.Contact) error
+	RemoveContact(contact *meshcore.Contact) error
+	ListContacts() ([]*meshcore.Contact, error)
+	// Channel administration: entering a channel is writing a slot.
+	ListChannels() ([]*meshcore.Channel, error)
+	AddChannel(name string, psk []byte) (*meshcore.Channel, error)
+	CreatePrivateChannel(name string) (*meshcore.Channel, error)
+	JoinPublicChannel(name string) (*meshcore.Channel, error)
+	JoinHashtagChannel(name string) (*meshcore.Channel, error)
+	SetChannel(channelIndex int, name string, psk []byte) error
+	RemoveChannel(index int) error
 }
 
 // Server serves the HTTP gateway API on top of a live meshcore client.
@@ -100,7 +116,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /get", s.handleGet)
 	mux.HandleFunc("GET /messages", s.handleMessages)
 	mux.HandleFunc("GET /contacts", s.handleContacts)
+	mux.HandleFunc("GET /contacts/{key}", s.handleContactGet)
+	mux.HandleFunc("POST /contacts", s.handleContactAdd)
+	mux.HandleFunc("DELETE /contacts/{key}", s.handleContactDelete)
 	mux.HandleFunc("GET /channels", s.handleChannels)
+	mux.HandleFunc("POST /channels", s.handleChannelAdd)
+	mux.HandleFunc("DELETE /channels/{index}", s.handleChannelDelete)
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("POST /send", s.handleSend)
 	mux.HandleFunc("POST /cli", s.handleCLI)
@@ -168,8 +189,14 @@ type contactInfo struct {
 }
 
 // handleContacts lists known contacts, sorted by name — a directory for
-// clients resolving recipients before POST /send.
-func (s *Server) handleContacts(w http.ResponseWriter, _ *http.Request) {
+// clients resolving recipients before POST /send. With ?full it serves the
+// admin view instead: a fresh listing straight from the device with all
+// stored fields (listContactsFull) — a device round trip, not a cache read.
+func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
+	if wantsFullListing(r) {
+		s.listContactsFull(w)
+		return
+	}
 	contacts := s.client.GetContacts()
 	list := make([]contactInfo, 0, len(contacts))
 	for _, c := range contacts {
@@ -188,7 +215,13 @@ type channelInfo struct {
 }
 
 // handleChannels lists the configured (non-empty) channels, sorted by index.
-func (s *Server) handleChannels(w http.ResponseWriter, _ *http.Request) {
+// With ?full it serves the admin view instead: every slot including empty
+// ones, with key material (listChannelsFull) — a device round trip.
+func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
+	if wantsFullListing(r) {
+		s.listChannelsFull(w)
+		return
+	}
 	channels := s.client.GetChannels()
 	list := make([]channelInfo, 0, len(channels))
 	for _, ch := range channels {

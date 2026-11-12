@@ -3,7 +3,7 @@ module github.com/stempit/meshcore-http-gateway
 go 1.27.1
 
 require (
-	github.com/stempit/meshcore-go v0.3.0
+	github.com/stempit/meshcore-go v0.4.1
 	github.com/stempit/meshcore-kit v0.2.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -22,10 +22,10 @@ require (
 	github.com/tinygo-org/cbgo v0.1.0 // indirect
 	github.com/tinygo-org/pio v0.3.0 // indirect
 	go.bug.st/serial v1.8.0 // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/exp v0.0.0-20261109185158-a52e3aef5920 // indirect
+	golang.org/x/sys v0.50.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
-	tinygo.org/x/bluetooth v0.16.0 // indirect
-	tinygo.org/x/espradio v0.4.0 // indirect
+	tinygo.org/x/bluetooth v0.17.0 // indirect
+	tinygo.org/x/espradio v0.5.0 // indirect
 )

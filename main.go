@@ -2,9 +2,12 @@
 // everything the radio receives accumulates in an unread inbox exposed via
 // GET /get (and the cursor-based /messages), external clients send mesh
 // messages via POST /send, device-level CLI commands go through POST /cli,
-// and GET /status serves a cached device snapshot. Optionally the inbox is
-// also pushed — every new message POSTed to a configured webhook endpoint
-// (push.go). See server.go for the API and README.md for docs.
+// and GET /status serves a cached device snapshot. The device's contacts and
+// channels are managed over HTTP too: POST/GET/DELETE /contacts… and
+// POST/DELETE /channels… (admin.go) drive the driver's synchronous admin API.
+// Optionally the inbox is also pushed — every new message POSTed to a
+// configured webhook endpoint (push.go). See server.go for the API and
+// README.md for docs.
 //
 // It is a standalone feature with its own device connection — independent of
 // the bot and the voice bridge. Don't run it against the same physical device
@@ -70,7 +73,7 @@ func main() {
 	go func() { serveErr <- httpSrv.ListenAndServe() }()
 
 	log.Info("HTTP gateway listening", "addr", cfg.Server.Listen, "auth", cfg.Server.Token != "")
-	log.Info("Endpoints: GET /get, GET /messages, GET /contacts, GET /channels, GET /status, POST /send, POST /cli")
+	log.Info("Endpoints: GET /get, GET /messages, GET /contacts[?full], GET /contacts/{key}, POST /contacts, DELETE /contacts/{key}, GET /channels[?full], POST /channels, DELETE /channels/{index}, GET /status, POST /send, POST /cli")
 
 	select {
 	case <-ctx.Done():
